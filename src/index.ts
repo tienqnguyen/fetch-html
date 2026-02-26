@@ -1,10 +1,8 @@
-import { marked } from 'marked'; // Assumes that a markdown library is available
+import { marked } from 'marked';
 
-// Updated function to strip HTML tags and extract text content.
-function stripHtmlTags(input) {
-    // Regular expression that matches HTML tags
+// Function to strip HTML tags and extract text content
+function stripHtmlTags(input: string): string {
     const regex = /<[^>]*>/g;
-    // Replace HTML tags with an empty string
     return input.replace(regex, '');
 }
 
@@ -13,23 +11,20 @@ function convertHtmlToMarkdown(html: string): string {
     return marked(html);
 }
 
-// Existing logic to handle parameters
-const urlParams = new URLSearchParams(window.location.search);
-const markdownParam = urlParams.get('markdown');
-const regexParam = urlParams.get('regex');
-
-// Your existing handling logic
-if (markdownParam === 'true') {
-    const html = /* code to fetch or get the HTML content */;
-    const markdown = convertHtmlToMarkdown(html);
-    // Return or display the markdown content as needed
-} else if (regexParam) {
-    // Existing regex functionality
-    const textContent = stripHtmlTags(html);
-    console.log(textContent); // Output: 'Hello World'
+// Main handler function
+export function processHtml(htmlContent: string, options: { markdown?: boolean; regex?: string } = {}): string {
+    if (options.markdown) {
+        return convertHtmlToMarkdown(htmlContent);
+    } else if (options.regex) {
+        const plainText = stripHtmlTags(htmlContent);
+        const regexPattern = new RegExp(options.regex, 'g');
+        return plainText.match(regexPattern)?.join('\n') || '';
+    } else {
+        return stripHtmlTags(htmlContent);
+    }
 }
 
 // Example usage
 const htmlString = '<div>Hello <strong>World</strong></div>';
-const textContent = stripHtmlTags(htmlString);
-console.log(textContent); // Output: 'Hello World'
+console.log('Plain text:', stripHtmlTags(htmlString));
+console.log('Markdown:', convertHtmlToMarkdown(htmlString));
