@@ -1,9 +1,45 @@
-import TurndownService from "turndown";
-
 const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1)/i;
+
+function strip(s: string): string {
+  return s.replace(/<[^>]+>/g, "").trim();
+}
+
+function htmlToPlainMarkdown(html: string): string {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi, (_, l, t) => "\n" + "#".repeat(+l) + " " + strip(t) + "\n")
+    .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `**${strip(c)}**`)
+    .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `_${strip(c)}_`)
+    .replace(/<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, h, t) => `[${strip(t)}](${h})`)
+    .replace(/<img[^>]+alt="([^"]*)"[^>]*>/gi, (_, a) => a ? `_${a}_` : "")
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c)}\n`)
+    .replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, (_, c) => `**${strip(c)}**  `)
+    .replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, (_, c) => strip(c) + "  ")
+    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, c) => strip(c).replace(/\s+/g, " ").trim() + "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
+    .replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, c) => "\n> " + strip(c) + "\n")
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
+    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
+    .replace(/<hr\s*\/?>/gi, "\n---\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 export default {
   async fetch(request: Request): Promise<Response> {
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -11,6 +47,7 @@ export default {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
           "Access-Control-Allow-Headers": "*",
+          "Access-Control-Max-Age": "86400",
         },
       });
     }
@@ -20,11 +57,11 @@ export default {
       const target = searchParams.get("url");
       const regexParam = searchParams.get("regex");
 
+      // Validate `url`
       if (!target) {
         return new Response("Missing `url` param", { status: 400 });
       }
 
-      // Validate URL
       let targetUrl: URL;
       try {
         targetUrl = new URL(target);
@@ -33,70 +70,58 @@ export default {
         return new Response("Invalid `url` param", { status: 400 });
       }
 
+      // SSRF protection
       if (BLOCKED_HOSTS.test(targetUrl.hostname)) {
         return new Response("Forbidden target", { status: 403 });
+      }
+
+      // Strip CF/proxy headers before forwarding
+      const forwardHeaders = new Headers(request.headers);
+      for (const h of ["host", "cf-connecting-ip", "cf-ray", "cf-ipcountry", "cf-visitor"]) {
+        forwardHeaders.delete(h);
       }
 
       // Fetch remote page
       const remoteResponse = await fetch(targetUrl.toString(), {
         method: request.method,
+        headers: forwardHeaders,
+        body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body as BodyInit,
         redirect: "follow",
       });
 
-      // ── No regex → plain proxy ──────────────────────────────────────────
+      // ── No regex → plain proxy pass-through ─────────────────────────────
       if (!regexParam) {
         const headers = new Headers(remoteResponse.headers);
         headers.set("Access-Control-Allow-Origin", "*");
         return new Response(remoteResponse.body, {
           status: remoteResponse.status,
+          statusText: remoteResponse.statusText,
           headers,
         });
       }
 
-      // ── regex present → extract + convert to Markdown ───────────────────
+      // ── regex present → extract HTML + convert to Markdown ───────────────
       let filterRegex: RegExp;
       try {
         filterRegex = new RegExp(regexParam, "gis");
       } catch {
-        return new Response("Invalid `regex` param", { status: 400 });
+        return new Response("Invalid `regex` param: not a valid regular expression", { status: 400 });
+      }
+
+      const contentType = remoteResponse.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/html")) {
+        return new Response("Target did not return HTML", { status: 415 });
       }
 
       const html = await remoteResponse.text();
       const matches = [...html.matchAll(filterRegex)];
 
       if (matches.length === 0) {
-        return new Response("No matches found", { status: 404 });
+        return new Response("No matches found for the provided regex", { status: 404 });
       }
 
       const matchedHtml = matches.map((m) => m[0]).join("\n");
-
-      // Turndown: flatten everything to plain readable Markdown text
-      const td = new TurndownService({
-        headingStyle: "atx",          // # H1, ## H2 ...
-        bulletListMarker: "-",
-        codeBlockStyle: "fenced",
-      });
-
-      // Tables → plain text rows (no | pipes |)
-      td.addRule("table-to-text", {
-        filter: ["table"],
-        replacement(_, node) {
-          const rows: string[] = [];
-          (node as HTMLElement).querySelectorAll("tr").forEach((tr) => {
-            const row = Array.from(tr.querySelectorAll("th, td"))
-              .map((c) => c.textContent?.trim() ?? "")
-              .filter(Boolean)
-              .join("  ");
-            if (row) rows.push(row);
-          });
-          return "\n\n" + rows.join("\n") + "\n\n";
-        },
-      });
-
-      // Strip noise: scripts, styles, nav, footer
-      td.remove(["script", "style", "nav", "footer", "iframe"]);
-
-      const markdown = td.turndown(matchedHtml);
+      const markdown = htmlToPlainMarkdown(matchedHtml);
 
       return new Response(markdown, {
         status: 200,
@@ -108,7 +133,10 @@ export default {
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return new Response(`Proxy error: ${msg}`, { status: 502 });
+      return new Response(`Proxy error: ${msg}`, {
+        status: 502,
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
     }
   },
 };
