@@ -1,7 +1,12 @@
 const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1)/i;
 
+
+
 function strip(s: string): string {
-  return s.replace(/<[^>]+>/g, "").trim();
+  return s
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function htmlToPlainMarkdown(html: string): string {
@@ -19,23 +24,25 @@ function htmlToPlainMarkdown(html: string): string {
     .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c)}\n`)
     .replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, (_, c) => `**${strip(c)}**  `)
     .replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, (_, c) => strip(c) + "  ")
-    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, c) => strip(c).replace(/\s+/g, " ").trim() + "\n")
+    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, c) => strip(c).trim() + "\n")  // ✅ fixed
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
     .replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, c) => "\n> " + strip(c) + "\n")
     .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
     .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
     .replace(/<hr\s*\/?>/gi, "\n---\n")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<[^>]+>/g, " ")          // ✅ remaining tags → space, not ""
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/\n{3,}/g, "\n\n")
+    .replace(/ {2,}/g, " ")            // ✅ collapse multiple spaces (inline)
+    .replace(/\n{3,}/g, "\n\n")        // collapse excess blank lines
     .trim();
 }
+
 
 export default {
   async fetch(request: Request): Promise<Response> {
