@@ -1,7 +1,5 @@
 const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1)/i;
 
-
-
 function strip(s: string): string {
   return s
     .replace(/<[^>]+>/g, " ")
@@ -24,25 +22,24 @@ function htmlToPlainMarkdown(html: string): string {
     .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c)}\n`)
     .replace(/<th[^>]*>([\s\S]*?)<\/th>/gi, (_, c) => `**${strip(c)}**  `)
     .replace(/<td[^>]*>([\s\S]*?)<\/td>/gi, (_, c) => strip(c) + "  ")
-    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, c) => strip(c).trim() + "\n")  // ✅ fixed
+    .replace(/<tr[^>]*>([\s\S]*?)<\/tr>/gi, (_, c) => strip(c).trim() + "\n")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
     .replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, c) => "\n> " + strip(c) + "\n")
     .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
     .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
     .replace(/<hr\s*\/?>/gi, "\n---\n")
-    .replace(/<[^>]+>/g, " ")          // ✅ remaining tags → space, not ""
+    .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/ {2,}/g, " ")            // ✅ collapse multiple spaces (inline)
-    .replace(/\n{3,}/g, "\n\n")        // collapse excess blank lines
+    .replace(/ {2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-
 
 export default {
   async fetch(request: Request): Promise<Response> {
@@ -61,12 +58,17 @@ export default {
 
     try {
       const { searchParams } = new URL(request.url);
-      const target = searchParams.get("url");
+      const target     = searchParams.get("url");
       const regexParam = searchParams.get("regex");
+      const format     = searchParams.get("format") ?? "markdown";
 
-      // Validate `url`
+      // ── Validate params ────────────────────────────────────────────────
       if (!target) {
         return new Response("Missing `url` param", { status: 400 });
+      }
+
+      if (!["markdown", "json"].includes(format)) {
+        return new Response("`format` must be: markdown or json", { status: 400 });
       }
 
       let targetUrl: URL;
@@ -88,7 +90,7 @@ export default {
         forwardHeaders.delete(h);
       }
 
-      // Fetch remote page
+      // Fetch remote
       const remoteResponse = await fetch(targetUrl.toString(), {
         method: request.method,
         headers: forwardHeaders,
@@ -96,7 +98,7 @@ export default {
         redirect: "follow",
       });
 
-      // ── No regex → plain proxy pass-through ─────────────────────────────
+      // ── No regex → plain proxy pass-through ───────────────────────────
       if (!regexParam) {
         const headers = new Headers(remoteResponse.headers);
         headers.set("Access-Control-Allow-Origin", "*");
@@ -107,7 +109,7 @@ export default {
         });
       }
 
-      // ── regex present → extract HTML + convert to Markdown ───────────────
+      // ── regex present → extract + format output ────────────────────────
       let filterRegex: RegExp;
       try {
         filterRegex = new RegExp(regexParam, "gis");
@@ -116,19 +118,45 @@ export default {
       }
 
       const contentType = remoteResponse.headers.get("content-type") ?? "";
-      if (!contentType.includes("text/html")) {
-        return new Response("Target did not return HTML", { status: 415 });
+      const isTextBased =
+        contentType.includes("text/html") ||
+        contentType.includes("xml") ||
+        contentType.includes("text/plain");
+
+      if (!isTextBased) {
+        return new Response("Target did not return text-based content", { status: 415 });
       }
 
-      const html = await remoteResponse.text();
-      const matches = [...html.matchAll(filterRegex)];
+      const body = await remoteResponse.text();
+      const matches = [...body.matchAll(filterRegex)];
 
       if (matches.length === 0) {
         return new Response("No matches found for the provided regex", { status: 404 });
       }
 
-      const matchedHtml = matches.map((m) => m[0]).join("\n");
-      const markdown = htmlToPlainMarkdown(matchedHtml);
+      // Use capture group [1] if defined, else full match [0]
+      const extracted = matches
+        .map((m) => (m[1] !== undefined ? m[1] : m[0]).trim())
+        .filter(Boolean);
+
+      // ── JSON ─────────────────────────────────────────────────────────
+      if (format === "json") {
+        return new Response(
+          JSON.stringify({ total: extracted.length, items: extracted }, null, 2),
+          {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json; charset=utf-8",
+              "Access-Control-Allow-Origin": "*",
+            },
+          }
+        );
+      }
+
+      // ── Markdown (default) ────────────────────────────────────────────
+      const joined = extracted.join("\n");
+      const isHtml = contentType.includes("text/html");
+      const markdown = isHtml ? htmlToPlainMarkdown(joined) : joined;
 
       return new Response(markdown, {
         status: 200,
