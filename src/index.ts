@@ -268,7 +268,7 @@ function formatOutput(rawHtml: string, format: string, isHtml: boolean): Respons
 
     case "html":
       // Return escaped source so tags are visible — not rendered
-      return respond(escapeHtml(rawHtml), 200, "text/plain; charset=utf-8");
+      return respond(rawHtml, 200, "text/plain; charset=utf-8");
 
     default: { // markdown
       const md = isHtml ? htmlToMarkdown(rawHtml) : rawHtml;
