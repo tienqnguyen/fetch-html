@@ -5,131 +5,24 @@ const MAX_BYTES = 5 * 1024 * 1024; // 5MB
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function strip(s: string): string {
+function decodeEntities(s: string): string {
   return s
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi, "\n")
-    .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/ {2,}/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(+code));
 }
 
-function htmlToPlainMarkdown(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<nav[\s\S]*?<\/nav>/gi, "")
-    .replace(/<footer[\s\S]*?<\/footer>/gi, "")
-    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
-
-    // Headings
-    .replace(
-      /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
-      (_, l, t) => "\n" + "#".repeat(+l) + " " + strip(t) + "\n"
-    )
-
-    // Bold / italic
-    .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `**${strip(c)}**`)
-    .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `_${strip(c)}_`)
-
-    // Links
-    .replace(
-      /<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi,
-      (_, h, t) => `[${strip(t)}](${h})`
-    )
-
-    // Images
-    .replace(/<img[^>]+alt="([^"]*)"[^>]*>/gi, (_, a) => (a ? `_${a}_` : ""))
-
-    // ── Tables ────────────────────────────────────────────────────────
-    .replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
-      const rows = [...tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-      if (rows.length === 0) return "";
-
-      const parsed: { cells: string[]; header: boolean }[] = rows.map((row) => {
-        const cells = [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)];
-        return {
-          cells: cells.map((c) => strip(c[1]).replace(/\n/g, " ").replace(/ {2,}/g, " ").trim()),
-          header: /<th[^>]*>/i.test(row[1]),
-        };
-      });
-
-      if (parsed.length === 0) return "";
-
-      const colCount = Math.max(...parsed.map((r) => r.cells.length));
-      const normalized = parsed.map((r) => {
-        const padded = [...r.cells];
-        while (padded.length < colCount) padded.push("");
-        return { cells: padded, header: r.header };
-      });
-
-      const widths = Array.from({ length: colCount }, (_, i) =>
-        Math.max(...normalized.map((r) => (r.cells[i] ?? "").length), 3)
-      );
-
-      const formatRow = (cells: string[]) =>
-        "| " + cells.map((c, i) => c.padEnd(widths[i])).join(" | ") + " |";
-
-      const separator = "| " + widths.map((w) => "-".repeat(w)).join(" | ") + " |";
-
-      const lines: string[] = ["\n"];
-      let separatorInserted = false;
-
-      normalized.forEach((row, idx) => {
-        lines.push(formatRow(row.cells));
-        if (!separatorInserted && (row.header || idx === 0)) {
-          lines.push(separator);
-          separatorInserted = true;
-        }
-      });
-
-      lines.push("\n");
-      return lines.join("\n");
-    })
-
-    // Lists
-    .replace(/<ul[^>]*>/gi, "\n")
-    .replace(/<\/ul>/gi, "\n")
-    .replace(/<ol[^>]*>/gi, "\n")
-    .replace(/<\/ol>/gi, "\n")
-    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c).replace(/\n/g, " ").trim()}\n`)
-
-    // Paragraphs & blocks
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
-    .replace(/<div[^>]*>([\s\S]*?)<\/div>/gi, (_, c) => "\n" + strip(c) + "\n")
-    .replace(
-      /<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi,
-      (_, c) => "\n> " + strip(c).replace(/\n/g, "\n> ") + "\n"
-    )
-
-    // Code blocks — pre before code to avoid double-wrapping
-    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
-    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
-
-    // HR
-    .replace(/<hr\s*\/?>/gi, "\n---\n")
-
-    // Strip remaining tags
-    .replace(/<[^>]+>/g, " ")
-
-    // Decode remaining entities
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-
-    // Clean up whitespace
+function strip(s: string): string {
+  return decodeEntities(
+    s
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi, "\n")
+      .replace(/<[^>]+>/g, " ")
+  )
     .replace(/ {2,}/g, " ")
     .replace(/\n[ \t]+/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
@@ -137,78 +30,196 @@ function htmlToPlainMarkdown(html: string): string {
     .trim();
 }
 
-function htmlTableToCsv(html: string): string {
-  // If no <table> tag found, treat the whole input as one table block
-  const tableRegex = /<table[\s\S]*?<\/table>/gi;
-  const tables = html.match(tableRegex) ?? [html];
-  const allTables: string[] = [];
+function stripInline(s: string): string {
+  // Like strip() but collapses newlines to a single space — for table cells / CSV
+  return strip(s).replace(/\n/g, " ").replace(/ {2,}/g, " ").trim();
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Selector extractor (regex-based, preserves inner HTML) ────────────────────
+
+function extractBySelector(html: string, selector: string): string[] {
+  // Supports: tag, .class, tag.class, #id, tag#id  (first compound token only)
+  const token = selector.trim().split(/\s+/)[0];
+  const tagMatch  = token.match(/^([a-z][a-z0-9]*)/i);
+  const classMatches = [...token.matchAll(/\.([a-z0-9_-]+)/gi)];
+  const idMatch   = token.match(/#([a-z0-9_-]+)/i);
+
+  const tag = tagMatch?.[1] ?? "[a-z][a-z0-9]*";
+
+  let lookahead = "";
+  if (idMatch)
+    lookahead += `(?=[^>]*\\bid="${idMatch[1]}"[^>]*)`;
+  for (const cls of classMatches) {
+    lookahead += `(?=[^>]*\\bclass="[^"]*(?:^|\\s)${cls[1]}(?:\\s|$)[^"]*")`;
+  }
+
+  const re = new RegExp(`<(${tag})${lookahead}[^>]*>[\\s\\S]*?<\\/\\1>`, "gi");
+  return [...html.matchAll(re)].map((m) => m[0]);
+}
+
+// ── HTML → Markdown ───────────────────────────────────────────────────────────
+
+function htmlToMarkdown(html: string): string {
+  return decodeEntities(
+    html
+      // Remove noise
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<nav[\s\S]*?<\/nav>/gi, "")
+      .replace(/<footer[\s\S]*?<\/footer>/gi, "")
+      .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+
+      // Headings
+      .replace(
+        /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
+        (_, l, t) => "\n\n" + "#".repeat(+l) + " " + stripInline(t) + "\n\n"
+      )
+
+      // Inline formatting
+      .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `**${stripInline(c)}**`)
+      .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi,     (_, _t, c) => `_${stripInline(c)}_`)
+      .replace(/<(s|del)[^>]*>([\s\S]*?)<\/\1>/gi,    (_, _t, c) => `~~${stripInline(c)}~~`)
+
+      // Links & images
+      .replace(
+        /<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi,
+        (_, h, t) => `[${stripInline(t)}](${h})`
+      )
+      .replace(/<img[^>]+alt="([^"]*)"[^>]*>/gi, (_, a) => (a ? `_${a}_` : ""))
+
+      // ── Tables → aligned markdown ─────────────────────────────────────────
+      .replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
+        const rows = [...tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
+        if (!rows.length) return "";
+
+        const parsed = rows.map((row) => ({
+          cells: [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map(
+            (c) => stripInline(c[1])
+          ),
+          isHeader: /<th[^>]*>/i.test(row[1]),
+        }));
+
+        const colCount = Math.max(...parsed.map((r) => r.cells.length));
+
+        const grid = parsed.map((r) => {
+          const cells = [...r.cells];
+          while (cells.length < colCount) cells.push("");
+          return { cells, isHeader: r.isHeader };
+        });
+
+        const widths = Array.from({ length: colCount }, (_, i) =>
+          Math.max(...grid.map((r) => r.cells[i]?.length ?? 0), 3)
+        );
+
+        const fmtRow = (cells: string[]) =>
+          "| " + cells.map((c, i) => c.padEnd(widths[i])).join(" | ") + " |";
+
+        const separator =
+          "| " + widths.map((w) => "-".repeat(w)).join(" | ") + " |";
+
+        const lines: string[] = ["\n"];
+        let sepDone = false;
+
+        grid.forEach((row, idx) => {
+          lines.push(fmtRow(row.cells));
+          if (!sepDone && (row.isHeader || idx === 0)) {
+            lines.push(separator);
+            sepDone = true;
+          }
+        });
+
+        lines.push("\n");
+        return lines.join("\n");
+      })
+
+      // Lists
+      .replace(/<ul[^>]*>|<\/ul>|<ol[^>]*>|<\/ol>/gi, "\n")
+      .replace(
+        /<li[^>]*>([\s\S]*?)<\/li>/gi,
+        (_, c) => `- ${stripInline(c)}\n`
+      )
+
+      // Blockquote
+      .replace(
+        /<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi,
+        (_, c) => "\n> " + strip(c).replace(/\n/g, "\n> ") + "\n"
+      )
+
+      // Code — pre BEFORE code to avoid double-wrapping
+      .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
+      .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + stripInline(c) + "`")
+
+      // Paragraphs & line breaks
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
+      .replace(/<div[^>]*>([\s\S]*?)<\/div>/gi, (_, c) => "\n" + strip(c) + "\n")
+
+      // HR
+      .replace(/<hr\s*\/?>/gi, "\n\n---\n\n")
+
+      // Strip remaining tags
+      .replace(/<[^>]+>/g, " ")
+  )
+    // Final whitespace cleanup
+    .replace(/ {2,}/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+// ── HTML → CSV ────────────────────────────────────────────────────────────────
+
+function htmlToCsv(html: string): string {
+  const tables = [...html.matchAll(/<table[\s\S]*?<\/table>/gi)].map((m) => m[0]);
+  if (!tables.length) tables.push(html); // fallback: treat whole input as table
+
+  const allBlocks: string[] = [];
 
   for (const table of tables) {
     const rows: string[] = [];
 
-    const captionMatch = table.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
-    if (captionMatch) {
-      rows.push(`# ${strip(captionMatch[1]).replace(/\n/g, " ").trim()}`);
-    }
+    const caption = table.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
+    if (caption) rows.push(`# ${stripInline(caption[1])}`);
 
-    const rowMatches = [...table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-
-    for (const row of rowMatches) {
+    for (const row of table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
       const cells: string[] = [];
-      const cellMatches = [...row[1].matchAll(/<t([hd])[^>]*>([\s\S]*?)<\/t[hd]>/gi)];
-
-      for (const cell of cellMatches) {
-        const isHeader = cell[1] === "h";
-        // strip newlines inside cells, collapse spaces, escape quotes
-        let text = strip(cell[2]).replace(/\n/g, " ").replace(/ {2,}/g, " ").replace(/"/g, '""').trim();
-        if (isHeader) text = text.toUpperCase();
+      for (const cell of row[1].matchAll(/<t([hd])[^>]*>([\s\S]*?)<\/t[hd]>/gi)) {
+        let text = stripInline(cell[2]).replace(/"/g, '""');
+        if (cell[1] === "h") text = text.toUpperCase();
         cells.push(`"${text}"`);
       }
-
-      if (cells.length > 0) rows.push(cells.join(","));
+      if (cells.length) rows.push(cells.join(","));
     }
 
-    if (rows.length > 0) allTables.push(rows.join("\n"));
+    if (rows.length) allBlocks.push(rows.join("\n"));
   }
 
-  return allTables.join("\n\n").trim();
+  return allBlocks.join("\n\n").trim();
 }
 
-async function extractWithSelector(html: string, selector: string): Promise<string[]> {
-  const results: string[] = [];
-  const stack: string[] = [];
-  let depth = 0;
+// ── HTML → JSON rows ──────────────────────────────────────────────────────────
 
-  const fakeResponse = new Response(html, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-
-  await new HTMLRewriter()
-    .on(selector, {
-      element(el) {
-        depth++;
-        const current = depth;
-        el.onEndTag(() => {
-          depth--;
-          if (depth < current) {
-            const trimmed = stack.splice(0).join("").trim();
-            if (trimmed) results.push(trimmed);
-          }
-        });
-      },
-      text(chunk) {
-        stack.push(chunk.text);
-      },
-    })
-    .transform(fakeResponse)
-    .text();
-
-  return results.filter(Boolean);
+function htmlToJsonRows(html: string): Array<string[]> {
+  const rows: Array<string[]> = [];
+  for (const row of html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)].map(
+      (c) => stripInline(c[1])
+    );
+    if (cells.length) rows.push(cells);
+  }
+  return rows;
 }
+
+// ── Response helpers ──────────────────────────────────────────────────────────
 
 function corsHeaders(): Record<string, string> {
   return {
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin":  "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "*",
   };
@@ -222,22 +233,43 @@ function respond(
 ): Response {
   return new Response(body, {
     status,
-    headers: {
-      "Content-Type": contentType,
-      ...corsHeaders(),
-      ...extra,
-    },
+    headers: { "Content-Type": contentType, ...corsHeaders(), ...extra },
   });
 }
 
-// ── Source escaping for format=html ──────────────────────────────────────────
+// ── Format dispatcher ─────────────────────────────────────────────────────────
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function formatOutput(rawHtml: string, format: string, isHtml: boolean): Response {
+  switch (format) {
+    case "json": {
+      const rows = htmlToJsonRows(rawHtml);
+      return respond(
+        JSON.stringify({ total: rows.length, rows }, null, 2),
+        200,
+        "application/json; charset=utf-8"
+      );
+    }
+
+    case "csv": {
+      if (!isHtml)
+        return respond("CSV format requires HTML content", 415, "text/plain; charset=utf-8");
+      const csv = htmlToCsv(rawHtml);
+      if (!csv)
+        return respond("No table found for CSV", 404, "text/plain; charset=utf-8");
+      return respond(csv, 200, "text/csv; charset=utf-8", {
+        "Content-Disposition": 'attachment; filename="data.csv"',
+      });
+    }
+
+    case "html":
+      // Return escaped source so tags are visible — not rendered
+      return respond(escapeHtml(rawHtml), 200, "text/plain; charset=utf-8");
+
+    default: { // markdown
+      const md = isHtml ? htmlToMarkdown(rawHtml) : rawHtml;
+      return respond(md, 200, "text/markdown; charset=utf-8");
+    }
+  }
 }
 
 // ── Main Handler ──────────────────────────────────────────────────────────────
@@ -245,6 +277,7 @@ function escapeHtml(s: string): string {
 export default {
   async fetch(request: Request): Promise<Response> {
 
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
@@ -259,18 +292,12 @@ export default {
       const selectorParam = searchParams.get("selector");
       const format        = searchParams.get("format") ?? "markdown";
 
-      // ── Validate ─────────────────────────────────────────────────────────
-      if (!target) {
+      // ── Validate ────────────────────────────────────────────────────────────
+      if (!target)
         return respond("Missing `url` param", 400, "text/plain; charset=utf-8");
-      }
 
-      if (!["markdown", "json", "html", "csv"].includes(format)) {
-        return respond(
-          "`format` must be: markdown, json, html, or csv",
-          400,
-          "text/plain; charset=utf-8"
-        );
-      }
+      if (!["markdown", "json", "html", "csv"].includes(format))
+        return respond("`format` must be: markdown | json | html | csv", 400, "text/plain; charset=utf-8");
 
       let targetUrl: URL;
       try {
@@ -280,177 +307,106 @@ export default {
         return respond("Invalid `url` param", 400, "text/plain; charset=utf-8");
       }
 
-      if (BLOCKED_HOSTS.test(targetUrl.hostname)) {
+      if (BLOCKED_HOSTS.test(targetUrl.hostname))
         return respond("Forbidden target", 403, "text/plain; charset=utf-8");
-      }
 
-      // ── Forward request ──────────────────────────────────────────────────
+      // ── Forward request ──────────────────────────────────────────────────────
       const forwardHeaders = new Headers(request.headers);
-      for (const h of ["host", "cf-connecting-ip", "cf-ray", "cf-ipcountry", "cf-visitor"]) {
+      for (const h of ["host", "cf-connecting-ip", "cf-ray", "cf-ipcountry", "cf-visitor"])
         forwardHeaders.delete(h);
-      }
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
 
-      let remoteResponse: Response;
+      let remoteRes: Response;
       try {
-        remoteResponse = await fetch(targetUrl.toString(), {
-          method: request.method,
-          headers: forwardHeaders,
-          body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body as BodyInit,
+        remoteRes = await fetch(targetUrl.toString(), {
+          method:   request.method,
+          headers:  forwardHeaders,
+          body:     ["GET", "HEAD"].includes(request.method) ? undefined : request.body as BodyInit,
           redirect: "follow",
-          signal: controller.signal,
+          signal:   controller.signal,
         });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return respond(`Fetch failed: ${msg}`, 502, "text/plain; charset=utf-8");
+        return respond(`Fetch failed: ${err instanceof Error ? err.message : err}`, 502, "text/plain; charset=utf-8");
       } finally {
         clearTimeout(timer);
       }
 
-      const contentType = remoteResponse.headers.get("content-type") ?? "";
+      const contentType = remoteRes.headers.get("content-type") ?? "";
       const isHtml = contentType.includes("text/html");
 
-      // ── Pass-through (no regex, no selector) ─────────────────────────────
+      // ── Pass-through (no regex, no selector) ──────────────────────────────
       if (!regexParam && !selectorParam) {
-        const headers = new Headers(remoteResponse.headers);
+        const headers = new Headers(remoteRes.headers);
         headers.set("Access-Control-Allow-Origin", "*");
-        return new Response(remoteResponse.body, {
-          status: remoteResponse.status,
-          statusText: remoteResponse.statusText,
+        return new Response(remoteRes.body, {
+          status:     remoteRes.status,
+          statusText: remoteRes.statusText,
           headers,
         });
       }
 
-      // ── Body size guard ──────────────────────────────────────────────────
+      // ── Read + size guard ────────────────────────────────────────────────
       let buffer: ArrayBuffer;
       try {
-        buffer = await remoteResponse.arrayBuffer();
+        buffer = await remoteRes.arrayBuffer();
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return respond(`Failed to read response body: ${msg}`, 502, "text/plain; charset=utf-8");
+        return respond(`Failed to read body: ${err instanceof Error ? err.message : err}`, 502, "text/plain; charset=utf-8");
       }
 
-      if (buffer.byteLength > MAX_BYTES) {
-        return respond("Response too large (limit: 5MB)", 413, "text/plain; charset=utf-8");
-      }
+      if (buffer.byteLength > MAX_BYTES)
+        return respond("Response too large (limit: 5 MB)", 413, "text/plain; charset=utf-8");
 
       const body = new TextDecoder().decode(buffer);
 
       // ── Selector branch ──────────────────────────────────────────────────
       if (selectorParam) {
-        if (!isHtml) {
+        if (!isHtml)
           return respond("CSS selector requires an HTML response", 415, "text/plain; charset=utf-8");
-        }
 
-        const items = await extractWithSelector(body, selectorParam);
+        const matches = extractBySelector(body, selectorParam);
+        if (!matches.length)
+          return respond("No elements matched the selector", 404, "text/plain; charset=utf-8");
 
-        if (items.length === 0) {
-          return respond("No matches found for selector", 404, "text/plain; charset=utf-8");
-        }
-
-        switch (format) {
-          case "json":
-            return respond(
-              JSON.stringify({ total: items.length, items }, null, 2),
-              200,
-              "application/json; charset=utf-8"
-            );
-
-          case "csv": {
-            const csv = items.map((v) => `"${v.replace(/\n/g, " ").replace(/"/g, '""').trim()}"`).join("\n");
-            return respond(csv, 200, "text/csv; charset=utf-8", {
-              "Content-Disposition": 'attachment; filename="data.csv"',
-            });
-          }
-
-          case "html":
-            // Return escaped source so tags are visible as text
-            return respond(
-              escapeHtml(items.join("\n\n")),
-              200,
-              "text/plain; charset=utf-8"
-            );
-
-          default: { // markdown
-            const md = items.map((item) => (isHtml ? htmlToPlainMarkdown(item) : item)).join("\n\n");
-            return respond(md, 200, "text/markdown; charset=utf-8");
-          }
-        }
+        // Join all matched elements; each separated by a blank line
+        const rawHtml = matches.join("\n\n");
+        return formatOutput(rawHtml, format, true);
       }
 
-      // ── Regex branch ─────────────────────────────────────────────────────
-      let filterRegex: RegExp;
-      try {
-        filterRegex = new RegExp(regexParam!, "gis");
-      } catch {
-        return respond(
-          "Invalid `regex` param: not a valid regular expression",
-          400,
-          "text/plain; charset=utf-8"
-        );
-      }
-
+      // ── Regex branch ────────────────────────────────────────────────────
       const isTextBased =
         isHtml ||
         contentType.includes("xml") ||
         contentType.includes("text/plain");
 
-      if (!isTextBased) {
+      if (!isTextBased)
         return respond("Target did not return text-based content", 415, "text/plain; charset=utf-8");
+
+      let filterRegex: RegExp;
+      try {
+        filterRegex = new RegExp(regexParam!, "gis");
+      } catch {
+        return respond("Invalid `regex` param", 400, "text/plain; charset=utf-8");
       }
 
       const matches = [...body.matchAll(filterRegex)];
+      if (!matches.length)
+        return respond("No regex matches found", 404, "text/plain; charset=utf-8");
 
-      if (matches.length === 0) {
-        return respond("No matches found for the provided regex", 404, "text/plain; charset=utf-8");
-      }
-
-      const extracted = matches
+      const rawHtml = matches
         .map((m) => (m[1] !== undefined ? m[1] : m[0]).trim())
-        .filter(Boolean);
+        .filter(Boolean)
+        .join("\n\n");
 
-      const joined = extracted.join("\n\n");
-
-      switch (format) {
-        case "json":
-          return respond(
-            JSON.stringify({ total: extracted.length, items: extracted }, null, 2),
-            200,
-            "application/json; charset=utf-8"
-          );
-
-        case "html":
-          // Return escaped source so tags are visible as plain text
-          return respond(
-            escapeHtml(joined),
-            200,
-            "text/plain; charset=utf-8"
-          );
-
-        case "csv": {
-          if (!isHtml) {
-            return respond("CSV format requires an HTML response", 415, "text/plain; charset=utf-8");
-          }
-          const csv = htmlTableToCsv(joined);
-          if (!csv) {
-            return respond("No table found in response", 404, "text/plain; charset=utf-8");
-          }
-          return respond(csv, 200, "text/csv; charset=utf-8", {
-            "Content-Disposition": 'attachment; filename="table.csv"',
-          });
-        }
-
-        default: { // markdown
-          const markdown = isHtml ? htmlToPlainMarkdown(joined) : joined;
-          return respond(markdown, 200, "text/markdown; charset=utf-8");
-        }
-      }
+      return formatOutput(rawHtml, format, isHtml);
 
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return respond(`Proxy error: ${msg}`, 502, "text/plain; charset=utf-8");
+      return respond(
+        `Proxy error: ${err instanceof Error ? err.message : err}`,
+        502,
+        "text/plain; charset=utf-8"
+      );
     }
   },
 };
