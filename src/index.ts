@@ -1,4 +1,9 @@
-const BLOCKED_HOSTS = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1)/i;
+const BLOCKED_HOSTS =
+  /^(localhost|127\.|10\.|192\.168\.|169\.254\.|0\.|::1|::ffff:127\.|fc[0-9a-f]{2}:|fd[0-9a-f]{2}:)/i;
+
+const MAX_BYTES = 5 * 1024 * 1024; // 5MB
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function strip(s: string): string {
   return s
@@ -26,8 +31,9 @@ function htmlToPlainMarkdown(html: string): string {
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
     .replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, c) => "\n> " + strip(c) + "\n")
-    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
+    // pre before code to avoid double-wrapping
     .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
     .replace(/<hr\s*\/?>/gi, "\n---\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
@@ -41,6 +47,28 @@ function htmlToPlainMarkdown(html: string): string {
     .trim();
 }
 
+function htmlTableToCsv(html: string): string {
+  const rows: string[] = [];
+  const tables = html.match(/<table[\s\S]*?<\/table>/gi) ?? [html];
+
+  for (const table of tables) {
+    const rowMatches = [...table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
+    for (const row of rowMatches) {
+      const cells: string[] = [];
+      const cellMatches = [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)];
+      for (const cell of cellMatches) {
+        const text = strip(cell[1]).replace(/"/g, '""');
+        cells.push(`"${text}"`);
+      }
+      if (cells.length > 0) rows.push(cells.join(","));
+    }
+    // blank line between multiple tables
+    if (tables.length > 1) rows.push("");
+  }
+
+  return rows.join("\n").trim();
+}
+
 async function extractWithSelector(html: string, selector: string): Promise<string[]> {
   const results: string[] = [];
   let current = "";
@@ -51,13 +79,15 @@ async function extractWithSelector(html: string, selector: string): Promise<stri
 
   await new HTMLRewriter()
     .on(selector, {
-      text(chunk) {
-        current += chunk.text;
-        if (chunk.lastInTextNode) {
+      element(el) {
+        el.onEndTag(() => {
           const trimmed = current.trim();
           if (trimmed) results.push(trimmed);
           current = "";
-        }
+        });
+      },
+      text(chunk) {
+        current += chunk.text;
       },
     })
     .transform(fakeResponse)
@@ -66,16 +96,41 @@ async function extractWithSelector(html: string, selector: string): Promise<stri
   return results.filter(Boolean);
 }
 
+function corsHeaders(): HeadersInit {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+  };
+}
+
+function respond(
+  body: string | null,
+  status: number,
+  contentType: string,
+  extra: HeadersInit = {}
+): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": contentType,
+      ...corsHeaders(),
+      ...extra,
+    },
+  });
+}
+
+// ── Main Handler ──────────────────────────────────────────────────────────────
+
 export default {
   async fetch(request: Request): Promise<Response> {
+
     // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
         headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "*",
+          ...corsHeaders(),
           "Access-Control-Max-Age": "86400",
         },
       });
@@ -85,16 +140,20 @@ export default {
       const { searchParams } = new URL(request.url);
       const target        = searchParams.get("url");
       const regexParam    = searchParams.get("regex");
-      const selectorParam = searchParams.get("selector");  // NEW
+      const selectorParam = searchParams.get("selector");
       const format        = searchParams.get("format") ?? "markdown";
 
-      // ── Validate params ──────────────────────────────────────────────
+      // ── Validate params ────────────────────────────────────────────────────
       if (!target) {
-        return new Response("Missing `url` param", { status: 400 });
+        return respond("Missing `url` param", 400, "text/plain; charset=utf-8");
       }
 
-      if (!["markdown", "json"].includes(format)) {
-        return new Response("`format` must be: markdown or json", { status: 400 });
+      if (!["markdown", "json", "html", "csv"].includes(format)) {
+        return respond(
+          "`format` must be: markdown, json, html, or csv",
+          400,
+          "text/plain; charset=utf-8"
+        );
       }
 
       let targetUrl: URL;
@@ -102,28 +161,41 @@ export default {
         targetUrl = new URL(target);
         if (!["http:", "https:"].includes(targetUrl.protocol)) throw new Error();
       } catch {
-        return new Response("Invalid `url` param", { status: 400 });
+        return respond("Invalid `url` param", 400, "text/plain; charset=utf-8");
       }
 
       if (BLOCKED_HOSTS.test(targetUrl.hostname)) {
-        return new Response("Forbidden target", { status: 403 });
+        return respond("Forbidden target", 403, "text/plain; charset=utf-8");
       }
 
+      // ── Forward request ────────────────────────────────────────────────────
       const forwardHeaders = new Headers(request.headers);
       for (const h of ["host", "cf-connecting-ip", "cf-ray", "cf-ipcountry", "cf-visitor"]) {
         forwardHeaders.delete(h);
       }
 
-      const remoteResponse = await fetch(targetUrl.toString(), {
-        method: request.method,
-        headers: forwardHeaders,
-        body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body as BodyInit,
-        redirect: "follow",
-      });
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+
+      let remoteResponse: Response;
+      try {
+        remoteResponse = await fetch(targetUrl.toString(), {
+          method: request.method,
+          headers: forwardHeaders,
+          body: ["GET", "HEAD"].includes(request.method) ? undefined : request.body as BodyInit,
+          redirect: "follow",
+          signal: controller.signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return respond(`Fetch failed: ${msg}`, 502, "text/plain; charset=utf-8");
+      } finally {
+        clearTimeout(timer);
+      }
 
       const contentType = remoteResponse.headers.get("content-type") ?? "";
 
-      // ── No regex/selector → plain proxy pass-through ─────────────────
+      // ── Pass-through (no regex, no selector) ──────────────────────────────
       if (!regexParam && !selectorParam) {
         const headers = new Headers(remoteResponse.headers);
         headers.set("Access-Control-Allow-Origin", "*");
@@ -134,100 +206,127 @@ export default {
         });
       }
 
-      const body = await remoteResponse.text();
+      // ── Body size guard ────────────────────────────────────────────────────
+      const buffer = await remoteResponse.arrayBuffer();
+      if (buffer.byteLength > MAX_BYTES) {
+        return respond("Response too large (limit: 5MB)", 413, "text/plain; charset=utf-8");
+      }
+      const body = new TextDecoder().decode(buffer);
+      const isHtml = contentType.includes("text/html");
 
-      // ── selector → HTMLRewriter (priority over regex) ─────────────────
+      // ── Selector branch ────────────────────────────────────────────────────
       if (selectorParam) {
-        if (!contentType.includes("text/html")) {
-          return new Response("CSS selector requires an HTML response", { status: 415 });
+        if (!isHtml) {
+          return respond(
+            "CSS selector requires an HTML response",
+            415,
+            "text/plain; charset=utf-8"
+          );
         }
 
         const items = await extractWithSelector(body, selectorParam);
 
         if (items.length === 0) {
-          return new Response("No matches found for selector", { status: 404 });
+          return respond("No matches found for selector", 404, "text/plain; charset=utf-8");
         }
 
-        if (format === "json") {
-          return new Response(
-            JSON.stringify({ total: items.length, items }, null, 2),
-            {
-              status: 200,
-              headers: {
-                "Content-Type": "application/json; charset=utf-8",
-                "Access-Control-Allow-Origin": "*",
-              },
-            }
-          );
-        }
+        switch (format) {
+          case "json":
+            return respond(
+              JSON.stringify({ total: items.length, items }, null, 2),
+              200,
+              "application/json; charset=utf-8"
+            );
 
-        return new Response(items.join("\n"), {
-          status: 200,
-          headers: {
-            "Content-Type": "text/markdown; charset=utf-8",
-            "Access-Control-Allow-Origin": "*",
-          },
-        });
+          case "csv": {
+            const csv = items.map((v) => `"${v.replace(/"/g, '""')}"`).join("\n");
+            return respond(csv, 200, "text/csv; charset=utf-8", {
+              "Content-Disposition": 'attachment; filename="data.csv"',
+            });
+          }
+
+          case "html":
+            return respond(items.join("\n"), 200, "text/html; charset=utf-8");
+
+          default: // markdown
+            return respond(items.join("\n"), 200, "text/markdown; charset=utf-8");
+        }
       }
 
-      // ── regex → extract + convert ─────────────────────────────────────
+      // ── Regex branch ───────────────────────────────────────────────────────
       let filterRegex: RegExp;
       try {
         filterRegex = new RegExp(regexParam!, "gis");
       } catch {
-        return new Response("Invalid `regex` param: not a valid regular expression", { status: 400 });
+        return respond(
+          "Invalid `regex` param: not a valid regular expression",
+          400,
+          "text/plain; charset=utf-8"
+        );
       }
 
       const isTextBased =
-        contentType.includes("text/html") ||
+        isHtml ||
         contentType.includes("xml") ||
         contentType.includes("text/plain");
 
       if (!isTextBased) {
-        return new Response("Target did not return text-based content", { status: 415 });
+        return respond(
+          "Target did not return text-based content",
+          415,
+          "text/plain; charset=utf-8"
+        );
       }
 
       const matches = [...body.matchAll(filterRegex)];
 
       if (matches.length === 0) {
-        return new Response("No matches found for the provided regex", { status: 404 });
+        return respond("No matches found for the provided regex", 404, "text/plain; charset=utf-8");
       }
 
       const extracted = matches
         .map((m) => (m[1] !== undefined ? m[1] : m[0]).trim())
         .filter(Boolean);
 
-      if (format === "json") {
-        return new Response(
-          JSON.stringify({ total: extracted.length, items: extracted }, null, 2),
-          {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json; charset=utf-8",
-              "Access-Control-Allow-Origin": "*",
-            },
-          }
-        );
-      }
-
       const joined = extracted.join("\n");
-      const isHtml = contentType.includes("text/html");
-      const markdown = isHtml ? htmlToPlainMarkdown(joined) : joined;
 
-      return new Response(markdown, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/markdown; charset=utf-8",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
+      switch (format) {
+        case "json":
+          return respond(
+            JSON.stringify({ total: extracted.length, items: extracted }, null, 2),
+            200,
+            "application/json; charset=utf-8"
+          );
+
+        case "html":
+          return respond(joined, 200, "text/html; charset=utf-8");
+
+        case "csv": {
+          if (!isHtml) {
+            return respond(
+              "CSV format requires an HTML response",
+              415,
+              "text/plain; charset=utf-8"
+            );
+          }
+          const csv = htmlTableToCsv(joined);
+          if (!csv) {
+            return respond("No table found in response", 404, "text/plain; charset=utf-8");
+          }
+          return respond(csv, 200, "text/csv; charset=utf-8", {
+            "Content-Disposition": 'attachment; filename="table.csv"',
+          });
+        }
+
+        default: { // markdown
+          const markdown = isHtml ? htmlToPlainMarkdown(joined) : joined;
+          return respond(markdown, 200, "text/markdown; charset=utf-8");
+        }
+      }
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return new Response(`Proxy error: ${msg}`, {
-        status: 502,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
+      return respond(`Proxy error: ${msg}`, 502, "text/plain; charset=utf-8");
     }
   },
 };
