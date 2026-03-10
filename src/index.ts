@@ -42,22 +42,27 @@ function escapeHtml(s: string): string {
 // ── Selector extractor (regex-based, preserves inner HTML) ────────────────────
 
 function extractBySelector(html: string, selector: string): string[] {
-  // Supports: tag, .class, tag.class, #id, tag#id  (first compound token only)
   const token = selector.trim().split(/\s+/)[0];
-  const tagMatch  = token.match(/^([a-z][a-z0-9]*)/i);
+  const tagMatch     = token.match(/^([a-z][a-z0-9]*)/i);
   const classMatches = [...token.matchAll(/\.([a-z0-9_-]+)/gi)];
-  const idMatch   = token.match(/#([a-z0-9_-]+)/i);
+  const idMatch      = token.match(/#([a-z0-9_-]+)/i);
 
   const tag = tagMatch?.[1] ?? "[a-z][a-z0-9]*";
 
   let lookahead = "";
-  if (idMatch)
-    lookahead += `(?=[^>]*\\bid="${idMatch[1]}"[^>]*)`;
-  for (const cls of classMatches) {
-    lookahead += `(?=[^>]*\\bclass="[^"]*(?:^|\\s)${cls[1]}(?:\\s|$)[^"]*")`;
+
+  if (idMatch) {
+    lookahead += `(?=[^>]*\\sid="${idMatch[1]}"[^>]*)`;
   }
 
-  const re = new RegExp(`<(${tag})${lookahead}[^>]*>[\\s\\S]*?<\\/\\1>`, "gi");
+  for (const cls of classMatches) {
+    // Match class anywhere in the class attribute value
+    lookahead += `(?=[^>]*\\sclass="[^"]*\\b${cls[1]}\\b[^"]*")`;
+  }
+
+  // Build regex: <tag ...lookahead...>...</tag>  (non-greedy, nested-safe via[\s\S]*?)
+  const re = new RegExp(`<(${tag})${lookahead}[^>]*>([\\s\\S]*?)<\\/\\1>`, "gi");
+
   return [...html.matchAll(re)].map((m) => m[0]);
 }
 
