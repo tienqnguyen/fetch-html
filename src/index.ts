@@ -7,7 +7,8 @@ const MAX_BYTES = 5 * 1024 * 1024; // 5MB
 
 function strip(s: string): string {
   return s
-    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|li|tr|h[1-6]|section|article)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -16,6 +17,8 @@ function strip(s: string): string {
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/ {2,}/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -26,34 +29,42 @@ function htmlToPlainMarkdown(html: string): string {
     .replace(/<nav[\s\S]*?<\/nav>/gi, "")
     .replace(/<footer[\s\S]*?<\/footer>/gi, "")
     .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+
+    // Headings
     .replace(
       /<h([1-6])[^>]*>([\s\S]*?)<\/h\1>/gi,
       (_, l, t) => "\n" + "#".repeat(+l) + " " + strip(t) + "\n"
     )
+
+    // Bold / italic
     .replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `**${strip(c)}**`)
     .replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_, _t, c) => `_${strip(c)}_`)
+
+    // Links
     .replace(
       /<a[^>]+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi,
       (_, h, t) => `[${strip(t)}](${h})`
     )
+
+    // Images
     .replace(/<img[^>]+alt="([^"]*)"[^>]*>/gi, (_, a) => (a ? `_${a}_` : ""))
-    // ── Table → aligned markdown table ───────────────────────────────
+
+    // ── Tables ────────────────────────────────────────────────────────
     .replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
       const rows = [...tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
       if (rows.length === 0) return "";
 
-      const isHeader = (rowHtml: string) => /<th[^>]*>/i.test(rowHtml);
-
       const parsed: { cells: string[]; header: boolean }[] = rows.map((row) => {
         const cells = [...row[1].matchAll(/<t[hd][^>]*>([\s\S]*?)<\/t[hd]>/gi)];
         return {
-          cells: cells.map((c) => strip(c[1])),
-          header: isHeader(row[1]),
+          cells: cells.map((c) => strip(c[1]).replace(/\n/g, " ").replace(/ {2,}/g, " ").trim()),
+          header: /<th[^>]*>/i.test(row[1]),
         };
       });
 
-      const colCount = Math.max(...parsed.map((r) => r.cells.length));
+      if (parsed.length === 0) return "";
 
+      const colCount = Math.max(...parsed.map((r) => r.cells.length));
       const normalized = parsed.map((r) => {
         const padded = [...r.cells];
         while (padded.length < colCount) padded.push("");
@@ -72,44 +83,64 @@ function htmlToPlainMarkdown(html: string): string {
       const lines: string[] = ["\n"];
       let separatorInserted = false;
 
-      for (const row of normalized) {
+      normalized.forEach((row, idx) => {
         lines.push(formatRow(row.cells));
-        // Insert separator after first header row (or after first row if no headers)
-        if (!separatorInserted && (row.header || normalized.indexOf(row) === 0)) {
+        if (!separatorInserted && (row.header || idx === 0)) {
           lines.push(separator);
           separatorInserted = true;
         }
-      }
+      });
 
       lines.push("\n");
       return lines.join("\n");
     })
-    // ── Lists ─────────────────────────────────────────────────────────
-    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c)}\n`)
+
+    // Lists
+    .replace(/<ul[^>]*>/gi, "\n")
+    .replace(/<\/ul>/gi, "\n")
+    .replace(/<ol[^>]*>/gi, "\n")
+    .replace(/<\/ol>/gi, "\n")
+    .replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, (_, c) => `- ${strip(c).replace(/\n/g, " ").trim()}\n`)
+
+    // Paragraphs & blocks
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_, c) => "\n" + strip(c) + "\n")
+    .replace(/<div[^>]*>([\s\S]*?)<\/div>/gi, (_, c) => "\n" + strip(c) + "\n")
     .replace(
       /<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi,
-      (_, c) => "\n> " + strip(c) + "\n"
+      (_, c) => "\n> " + strip(c).replace(/\n/g, "\n> ") + "\n"
     )
-    // pre before code to avoid double-wrapping
+
+    // Code blocks — pre before code to avoid double-wrapping
     .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_, c) => "\n```\n" + strip(c) + "\n```\n")
     .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_, c) => "`" + strip(c) + "`")
+
+    // HR
     .replace(/<hr\s*\/?>/gi, "\n---\n")
+
+    // Strip remaining tags
     .replace(/<[^>]+>/g, " ")
+
+    // Decode remaining entities
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+
+    // Clean up whitespace
     .replace(/ {2,}/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
 function htmlTableToCsv(html: string): string {
-  const tables = html.match(/<table[\s\S]*?<\/table>/gi) ?? [html];
+  // If no <table> tag found, treat the whole input as one table block
+  const tableRegex = /<table[\s\S]*?<\/table>/gi;
+  const tables = html.match(tableRegex) ?? [html];
   const allTables: string[] = [];
 
   for (const table of tables) {
@@ -117,7 +148,7 @@ function htmlTableToCsv(html: string): string {
 
     const captionMatch = table.match(/<caption[^>]*>([\s\S]*?)<\/caption>/i);
     if (captionMatch) {
-      rows.push(`# ${strip(captionMatch[1])}`);
+      rows.push(`# ${strip(captionMatch[1]).replace(/\n/g, " ").trim()}`);
     }
 
     const rowMatches = [...table.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
@@ -128,7 +159,8 @@ function htmlTableToCsv(html: string): string {
 
       for (const cell of cellMatches) {
         const isHeader = cell[1] === "h";
-        let text = strip(cell[2]).replace(/"/g, '""');
+        // strip newlines inside cells, collapse spaces, escape quotes
+        let text = strip(cell[2]).replace(/\n/g, " ").replace(/ {2,}/g, " ").replace(/"/g, '""').trim();
         if (isHeader) text = text.toUpperCase();
         cells.push(`"${text}"`);
       }
@@ -144,7 +176,8 @@ function htmlTableToCsv(html: string): string {
 
 async function extractWithSelector(html: string, selector: string): Promise<string[]> {
   const results: string[] = [];
-  let current = "";
+  const stack: string[] = [];
+  let depth = 0;
 
   const fakeResponse = new Response(html, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -153,14 +186,18 @@ async function extractWithSelector(html: string, selector: string): Promise<stri
   await new HTMLRewriter()
     .on(selector, {
       element(el) {
+        depth++;
+        const current = depth;
         el.onEndTag(() => {
-          const trimmed = current.trim();
-          if (trimmed) results.push(trimmed);
-          current = "";
+          depth--;
+          if (depth < current) {
+            const trimmed = stack.splice(0).join("").trim();
+            if (trimmed) results.push(trimmed);
+          }
         });
       },
       text(chunk) {
-        current += chunk.text;
+        stack.push(chunk.text);
       },
     })
     .transform(fakeResponse)
@@ -193,19 +230,25 @@ function respond(
   });
 }
 
+// ── Source escaping for format=html ──────────────────────────────────────────
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 // ── Main Handler ──────────────────────────────────────────────────────────────
 
 export default {
   async fetch(request: Request): Promise<Response> {
 
-    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         status: 204,
-        headers: {
-          ...corsHeaders(),
-          "Access-Control-Max-Age": "86400",
-        },
+        headers: { ...corsHeaders(), "Access-Control-Max-Age": "86400" },
       });
     }
 
@@ -216,7 +259,7 @@ export default {
       const selectorParam = searchParams.get("selector");
       const format        = searchParams.get("format") ?? "markdown";
 
-      // ── Validate params ──────────────────────────────────────────────────
+      // ── Validate ─────────────────────────────────────────────────────────
       if (!target) {
         return respond("Missing `url` param", 400, "text/plain; charset=utf-8");
       }
@@ -281,20 +324,24 @@ export default {
       }
 
       // ── Body size guard ──────────────────────────────────────────────────
-      const buffer = await remoteResponse.arrayBuffer();
+      let buffer: ArrayBuffer;
+      try {
+        buffer = await remoteResponse.arrayBuffer();
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return respond(`Failed to read response body: ${msg}`, 502, "text/plain; charset=utf-8");
+      }
+
       if (buffer.byteLength > MAX_BYTES) {
         return respond("Response too large (limit: 5MB)", 413, "text/plain; charset=utf-8");
       }
+
       const body = new TextDecoder().decode(buffer);
 
       // ── Selector branch ──────────────────────────────────────────────────
       if (selectorParam) {
         if (!isHtml) {
-          return respond(
-            "CSS selector requires an HTML response",
-            415,
-            "text/plain; charset=utf-8"
-          );
+          return respond("CSS selector requires an HTML response", 415, "text/plain; charset=utf-8");
         }
 
         const items = await extractWithSelector(body, selectorParam);
@@ -312,17 +359,24 @@ export default {
             );
 
           case "csv": {
-            const csv = items.map((v) => `"${v.replace(/"/g, '""')}"`).join("\n");
+            const csv = items.map((v) => `"${v.replace(/\n/g, " ").replace(/"/g, '""').trim()}"`).join("\n");
             return respond(csv, 200, "text/csv; charset=utf-8", {
               "Content-Disposition": 'attachment; filename="data.csv"',
             });
           }
 
           case "html":
-            return respond(items.join("\n"), 200, "text/html; charset=utf-8");
+            // Return escaped source so tags are visible as text
+            return respond(
+              escapeHtml(items.join("\n\n")),
+              200,
+              "text/plain; charset=utf-8"
+            );
 
-          default: // markdown
-            return respond(items.join("\n"), 200, "text/markdown; charset=utf-8");
+          default: { // markdown
+            const md = items.map((item) => (isHtml ? htmlToPlainMarkdown(item) : item)).join("\n\n");
+            return respond(md, 200, "text/markdown; charset=utf-8");
+          }
         }
       }
 
@@ -344,28 +398,20 @@ export default {
         contentType.includes("text/plain");
 
       if (!isTextBased) {
-        return respond(
-          "Target did not return text-based content",
-          415,
-          "text/plain; charset=utf-8"
-        );
+        return respond("Target did not return text-based content", 415, "text/plain; charset=utf-8");
       }
 
       const matches = [...body.matchAll(filterRegex)];
 
       if (matches.length === 0) {
-        return respond(
-          "No matches found for the provided regex",
-          404,
-          "text/plain; charset=utf-8"
-        );
+        return respond("No matches found for the provided regex", 404, "text/plain; charset=utf-8");
       }
 
       const extracted = matches
         .map((m) => (m[1] !== undefined ? m[1] : m[0]).trim())
         .filter(Boolean);
 
-      const joined = extracted.join("\n");
+      const joined = extracted.join("\n\n");
 
       switch (format) {
         case "json":
@@ -376,15 +422,16 @@ export default {
           );
 
         case "html":
-          return respond(joined, 200, "text/html; charset=utf-8");
+          // Return escaped source so tags are visible as plain text
+          return respond(
+            escapeHtml(joined),
+            200,
+            "text/plain; charset=utf-8"
+          );
 
         case "csv": {
           if (!isHtml) {
-            return respond(
-              "CSV format requires an HTML response",
-              415,
-              "text/plain; charset=utf-8"
-            );
+            return respond("CSV format requires an HTML response", 415, "text/plain; charset=utf-8");
           }
           const csv = htmlTableToCsv(joined);
           if (!csv) {
